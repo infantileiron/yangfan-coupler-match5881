@@ -9,6 +9,7 @@ from scripts.seed_demo import seed
 from src.config.settings import SEED
 from src.middlewares.http import install
 from src.models.database import cache, engine
+from src.models.schema import upgrade
 from src.models.tables import metadata
 from src.routes.api import router
 
@@ -16,6 +17,7 @@ from src.routes.api import router
 @asynccontextmanager
 async def lifespan(app):
     metadata.create_all(engine)
+    upgrade()
     if SEED:
         try:
             logging.info('Demo seed: %s', seed())

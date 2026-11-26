@@ -26,7 +26,8 @@ export function bindSource(root, refresh) {
     const file = form.elements.file.files[0];
     const imported = await api('/datasets', {name:file.name,csv:await file.text()});
     state.datasetId = imported.id;
-    state.status = imported.created ? `已保存 ${imported.rows} 行。` : '数据与已有版本一致，已选中该版本。';
+    const rounds = imported.requeued?.length ? ` 更正触发 ${imported.requeued.length} 个当轮重算（版本 ${imported.requeued.map(row => row.version + 1).join('、')}）。` : '';
+    state.status = (imported.created ? `已保存 ${imported.rows} 行。` : '数据与已有版本一致，已选中该版本。') + rounds;
   }, refresh);
   root.querySelector('#revision')?.addEventListener('change', event => {
     state.datasetId = Number(event.target.value);

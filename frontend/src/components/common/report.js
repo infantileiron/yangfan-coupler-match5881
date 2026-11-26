@@ -15,5 +15,5 @@ function chart(spec) {
 export function report(result) {
   const metrics = (result.metric_order || Object.keys(result.metrics)).map(key => [key,result.metrics[key]]);
   const columns = result.columns?.map(key => ({key,label:key}));
-  return `<div class="reading"><h2>${esc(result.headline)}</h2><dl class="metrics">${metrics.map(([key,value]) => `<div><dt>${esc(key)}</dt><dd>${esc(display(value))}</dd></div>`).join('')}</dl>${chart(result.chart)}<h3>业务明细</h3>${table(result.rows,columns)}<h3>口径与限制</h3><ul>${result.notes.map(note => `<li>${esc(note)}</li>`).join('')}</ul></div>`;
+  return `<div class="reading"><h2>${esc(result.headline)}</h2><dl class="metrics">${metrics.map(([key,value]) => `<div><dt>${esc(key)}</dt><dd>${esc(display(value))}</dd></div>`).join('')}</dl>${chart(result.chart)}${chart(result.batch_chart)}<h3>业务明细</h3>${table(result.rows,columns)}<h3>口径与限制</h3><ul>${result.notes.map(note => `<li>${esc(note)}</li>`).join('')}</ul></div>`;
 }

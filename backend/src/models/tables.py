@@ -12,7 +12,10 @@ runs = Table('analysis_runs', metadata, Column('id', Integer, primary_key=True),
              Column('state', String(16), nullable=False, index=True), Column('owner', String(40), nullable=False),
              Column('created', Double, nullable=False), Column('started', Double), Column('finished', Double),
              Column('result', JSON), Column('error', Text), Column('decision', String(16)),
-             Column('reviewer', String(40)), Column('review_note', Text), Column('reviewed', Double))
+             Column('reviewer', String(40)), Column('review_note', Text), Column('reviewed', Double),
+             Column('round_key', String(64), index=True), Column('version', Integer, nullable=False, default=0),
+             Column('active', Integer, nullable=False, default=0, server_default='0'),
+             UniqueConstraint('dataset_id', 'round_key', 'version', name='ux_analysis_runs_round_version'))
 schedules = Table('report_schedules', metadata, Column('id', Integer, primary_key=True),
                   Column('run_id', Integer, nullable=False), Column('recipient', String(100), nullable=False),
                   Column('cadence', String(16), nullable=False), Column('next_at', Double, nullable=False, index=True),

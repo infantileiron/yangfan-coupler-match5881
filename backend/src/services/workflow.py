@@ -1,24 +1,96 @@
+import hashlib
+import json
 import time
 
 from fastapi import HTTPException
-from sqlalchemy import and_, insert, or_, select, update
+from sqlalchemy import and_, func, insert, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from src.constants.enums import State
 from src.models.database import add_event, engine, fetch_one
 from src.models.tables import datasets, deliveries, runs, schedules
 from src.services.data import parse_options
+from src.services.domain_data import PENDING
 
 
-def add_run(body, actor):
+def round_key(options: dict, records: list[dict]) -> str | None:
+    """Stable identity of a bench scheduling round.
+
+    A round is defined by the pending candidates and the analysis parameters, not by
+    the trial outcomes, so a corrected data revision that fixes fixturing results maps
+    to the same round and simply becomes its next version.
+    """
+    pending = sorted((row.get('record_id'), row.get('date')) for row in records if row.get('stage') == PENDING)
+    if not pending:
+        return None
+    payload = json.dumps({'options': options, 'pending': pending}, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _round_key_for(dataset_id, records, options):
+    key = round_key(options, records)
+    if key is not None:
+        return key
+    fallback = json.dumps({'dataset_id': dataset_id, 'options': options}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(fallback.encode()).hexdigest()
+
+
+def _next_version(connection, key):
+    current = connection.scalar(select(func.max(runs.c.version)).where(runs.c.round_key == key))
+    return 0 if current is None else current + 1
+
+
+def add_run(body, actor, key=None):
     options = parse_options(body.options)
     now = time.time()
     with engine.begin() as connection:
-        if fetch_one(connection, datasets, body.dataset_id) is None:
+        data = fetch_one(connection, datasets, body.dataset_id)
+        if data is None:
             raise HTTPException(404, '数据版本不存在。')
-        key = connection.execute(insert(runs).values(dataset_id=body.dataset_id, options=options,
-                    state=State.queued.value, owner=actor, created=now)).inserted_primary_key[0]
-        add_event(connection, actor, 'queue', key, now)
-    return {'id': key, 'state': State.queued.value}
+        identity = key or _round_key_for(body.dataset_id, data['records'], options)
+        version = _next_version(connection, identity)
+        try:
+            run_id = connection.execute(insert(runs).values(dataset_id=body.dataset_id, options=options,
+                                       state=State.queued.value, owner=actor, created=now, round_key=identity,
+                                       version=version, active=0)).inserted_primary_key[0]
+        except IntegrityError:
+            raise HTTPException(409, '同一数据版本与参数的当轮计算已在排队，请等待其完成。') from None
+        add_event(connection, actor, 'queue', run_id, now)
+    return {'id': run_id, 'state': State.queued.value, 'round_key': identity, 'version': version}
+
+
+def requeue_corrections(dataset_id, records, actor):
+    """Late corrections re-run the same round instead of starting a new one."""
+    created = []
+    now = time.time()
+    with engine.begin() as connection:
+        known = list(connection.execute(select(runs.c.round_key).distinct().where(runs.c.round_key.is_not(None))).scalars())
+        if not known:
+            return created
+        used = set(connection.execute(select(runs.c.dataset_id, runs.c.round_key)).all())
+        # MySQL cannot group JSON columns, so dedupe parameter sets in Python instead.
+        option_rows = connection.execute(select(runs.c.options)).scalars().all()
+        seen_options = set()
+        for options in option_rows:
+            marker = json.dumps(options, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+            if marker in seen_options:
+                continue
+            seen_options.add(marker)
+            identity = round_key(options, records)
+            if identity is None or identity not in known:
+                continue
+            if (dataset_id, identity) in used:
+                continue
+            version = _next_version(connection, identity)
+            try:
+                run_id = connection.execute(insert(runs).values(dataset_id=dataset_id, options=options,
+                                           state=State.queued.value, owner=actor, created=now, round_key=identity,
+                                           version=version, active=0)).inserted_primary_key[0]
+            except IntegrityError:
+                continue
+            add_event(connection, actor, 'queue', run_id, now)
+            created.append({'id': run_id, 'round_key': identity, 'version': version})
+    return created
 
 
 def claim_run():
@@ -37,6 +109,38 @@ def claim_run():
         return key, now, data['records'], run['options']
 
 
+def _activate_round(connection, identity, now):
+    """Atomically switch a round to its newest fully computed version.
+
+    A version only takes effect once every run of that edition has completed, so a
+    late, stale computation of an older version can never overwrite a newer one; a
+    newer edition that is still computing leaves the current version in service.
+    Older versions keep their result, review decision, and schedules for later review.
+    """
+    members = connection.execute(select(runs).where(runs.c.round_key == identity)).mappings().all()
+    if not members:
+        return None
+    editions = {}
+    for run in members:
+        editions.setdefault(run['version'] or 0, []).append(run)
+    complete = [edition for edition, edition_runs in editions.items()
+                if all(run['state'] == State.completed.value for run in edition_runs)]
+    if not complete:
+        return None
+    # Always target the newest edition that is entirely computed: a late, stale run of an
+    # older edition therefore re-triggers the switch to the newer one rather than winning.
+    newest = editions[max(complete)]
+    target = max(newest, key=lambda run: run['id'])
+    if target['active']:
+        return target['id']
+    for run in members:
+        if run['active'] and run['id'] != target['id']:
+            connection.execute(update(runs).where(runs.c.id == run['id']).values(active=0))
+    connection.execute(update(runs).where(runs.c.id == target['id']).values(active=1))
+    add_event(connection, 'worker', 'activate', target['id'], now)
+    return target['id']
+
+
 def finish_run(key, claim, result, error):
     now = time.time()
     state = State.failed.value if error else State.completed.value
@@ -46,6 +150,9 @@ def finish_run(key, claim, result, error):
                                                   error=error, finished=now))
         if saved.rowcount:
             add_event(connection, 'worker', state, key, now)
+            identity = connection.scalar(select(runs.c.round_key).where(runs.c.id == key))
+            if identity:
+                _activate_round(connection, identity, now)
 
 
 def review_run(key, body, actor):

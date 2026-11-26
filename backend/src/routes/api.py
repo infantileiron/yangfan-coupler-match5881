@@ -9,7 +9,7 @@ from src.models.tables import datasets, runs
 from src.schemas.requests import Delivery, Import, Login, Review, Run
 from src.services.data import PROFILE, csv_records, save_revision
 from src.services.domain import sample_rows
-from src.services.workflow import add_run, cancel_schedule, review_run, schedule_report
+from src.services.workflow import add_run, cancel_schedule, requeue_corrections, review_run, schedule_report
 from src.utils.exports import write_csv
 from src.utils.security import allowed, authenticate, signed_in
 
@@ -59,7 +59,8 @@ def get_dataset(key: int, account=Depends(signed_in)):
 def import_data(body: Import, account=Depends(analyst)):
     rows = csv_records(body.csv)
     key, created = save_revision(body.name, rows, account['username'])
-    return {'id': key, 'created': created, 'rows': len(rows)}
+    requeued = requeue_corrections(key, rows, account['username'])
+    return {'id': key, 'created': created, 'rows': len(rows), 'requeued': requeued}
 
 
 @router.get('/runs')
