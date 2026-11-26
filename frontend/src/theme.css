@@ -1,0 +1,15 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&family=Instrument+Serif&display=swap');
+:root {
+  --text-font: 'DM Sans'; --title-font: 'Instrument Serif';
+  --paper: oklch(.975 .012 357); --surface: oklch(.994 .006 357);
+  --ink: oklch(.235 .035 357); --quiet: oklch(.435 .038 357);
+  --stripe: oklch(.961 .014 357); --rule: oklch(.858 .024 357);
+  --accent: oklch(.445 0.112 357); --button-ink: oklch(.98 .007 357);
+  --focus: oklch(.64 0.112 357);
+  --side: oklch(.923 .029 357);
+  --side-ink: oklch(.255 .033 357);
+  --highlight: oklch(.866 .045 357);
+  --highlight-edge: oklch(.49 .10 357);
+  --side-width: 272px; --side-pad: 1.25rem;
+  --login-ratio: 1.86fr; --report-stripe: 9px;
+}
